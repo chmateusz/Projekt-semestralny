@@ -26,8 +26,9 @@ from Bio import Entrez, SeqIO
 VALID_DNA = set("ACGTN")
 
 
-
+# =========================
 # LOGIKA
+# =========================
 
 def validate_dna(seq: str) -> str:
     seq = seq.upper().replace(" ", "").replace("\n", "").replace("\r", "")
@@ -224,7 +225,10 @@ def analyze_sequence(source_name: str, header: str, seq: str, motifs: List[str],
         "bins": bins_df
     }
 
+
+# =========================
 # PDF
+# =========================
 
 def export_pdf_report(
     out_path: Path,
@@ -421,18 +425,21 @@ def export_pdf_report(
             fig3.clear()
 
 
-
+# =========================
 # GUI
-
+# =========================
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("DNA Motif Analyzer - Extended")
-        self.geometry("1320x880")
+        self.geometry("1360x900")
 
         self.file1_var = tk.StringVar()
         self.file2_var = tk.StringVar()
+
+        self.seq1_source_var = tk.StringVar(value="file")
+        self.seq2_source_var = tk.StringVar(value="file")
 
         self.ncbi1_var = tk.StringVar()
         self.ncbi2_var = tk.StringVar()
@@ -441,8 +448,6 @@ class App(tk.Tk):
         self.motifs_var = tk.StringVar(value="ATG,TATA,CGCG")
         self.bin_var = tk.StringVar(value="100")
 
-        self.seq1_data = None
-        self.seq2_data = None
         self.analysis1 = None
         self.analysis2 = None
 
@@ -485,32 +490,44 @@ class App(tk.Tk):
         desc_label.pack(anchor="e", pady=(8, 0))
 
         row = 0
+        tk.Label(left_panel, text="Sekwencja 1 - źródło:").grid(row=row, column=0, sticky="w")
+        tk.Radiobutton(left_panel, text="Plik", variable=self.seq1_source_var, value="file").grid(row=row, column=1, sticky="w")
+        tk.Radiobutton(left_panel, text="NCBI", variable=self.seq1_source_var, value="ncbi").grid(row=row, column=1, padx=(80, 0), sticky="w")
+
+        row += 1
         tk.Label(left_panel, text="Sekwencja 1 - plik:").grid(row=row, column=0, sticky="w")
         tk.Entry(left_panel, textvariable=self.file1_var, width=60).grid(row=row, column=1, padx=5, sticky="w")
         tk.Button(left_panel, text="Wybierz...", command=self.pick_file1).grid(row=row, column=2, sticky="w")
+        tk.Button(left_panel, text="Clear", command=self.clear_seq1).grid(row=row, column=3, padx=(5, 0), sticky="w")
+
+        row += 1
+        tk.Label(left_panel, text="Sekwencja 1 - accession NCBI:").grid(row=row, column=0, sticky="w", pady=(6, 0))
+        tk.Entry(left_panel, textvariable=self.ncbi1_var, width=30).grid(row=row, column=1, padx=5, sticky="w", pady=(6, 0))
+        tk.Button(left_panel, text="Pobierz 1 z NCBI", command=self.fetch_ncbi1).grid(row=row, column=2, sticky="w", pady=(6, 0))
+
+        row += 1
+        tk.Label(left_panel, text="Sekwencja 2 - źródło:").grid(row=row, column=0, sticky="w", pady=(12, 0))
+        tk.Radiobutton(left_panel, text="Plik", variable=self.seq2_source_var, value="file").grid(row=row, column=1, sticky="w", pady=(12, 0))
+        tk.Radiobutton(left_panel, text="NCBI", variable=self.seq2_source_var, value="ncbi").grid(row=row, column=1, padx=(80, 0), sticky="w", pady=(12, 0))
 
         row += 1
         tk.Label(left_panel, text="Sekwencja 2 - plik:").grid(row=row, column=0, sticky="w")
         tk.Entry(left_panel, textvariable=self.file2_var, width=60).grid(row=row, column=1, padx=5, sticky="w")
         tk.Button(left_panel, text="Wybierz...", command=self.pick_file2).grid(row=row, column=2, sticky="w")
+        tk.Button(left_panel, text="Clear", command=self.clear_seq2).grid(row=row, column=3, padx=(5, 0), sticky="w")
 
         row += 1
-        tk.Label(left_panel, text="Sekwencja 1 - accession NCBI:").grid(row=row, column=0, sticky="w", pady=(10, 0))
-        tk.Entry(left_panel, textvariable=self.ncbi1_var, width=30).grid(row=row, column=1, padx=5, sticky="w", pady=(10, 0))
-        tk.Button(left_panel, text="Pobierz 1 z NCBI", command=self.fetch_ncbi1).grid(row=row, column=2, sticky="w", pady=(10, 0))
+        tk.Label(left_panel, text="Sekwencja 2 - accession NCBI:").grid(row=row, column=0, sticky="w", pady=(6, 0))
+        tk.Entry(left_panel, textvariable=self.ncbi2_var, width=30).grid(row=row, column=1, padx=5, sticky="w", pady=(6, 0))
+        tk.Button(left_panel, text="Pobierz 2 z NCBI", command=self.fetch_ncbi2).grid(row=row, column=2, sticky="w", pady=(6, 0))
 
         row += 1
-        tk.Label(left_panel, text="Sekwencja 2 - accession NCBI:").grid(row=row, column=0, sticky="w")
-        tk.Entry(left_panel, textvariable=self.ncbi2_var, width=30).grid(row=row, column=1, padx=5, sticky="w")
-        tk.Button(left_panel, text="Pobierz 2 z NCBI", command=self.fetch_ncbi2).grid(row=row, column=2, sticky="w")
+        tk.Label(left_panel, text="E-mail do Entrez/NCBI:").grid(row=row, column=0, sticky="w", pady=(12, 0))
+        tk.Entry(left_panel, textvariable=self.email_var, width=35).grid(row=row, column=1, padx=5, sticky="w", pady=(12, 0))
 
         row += 1
-        tk.Label(left_panel, text="E-mail do Entrez/NCBI:").grid(row=row, column=0, sticky="w")
-        tk.Entry(left_panel, textvariable=self.email_var, width=35).grid(row=row, column=1, padx=5, sticky="w")
-
-        row += 1
-        tk.Label(left_panel, text="Motywy (po przecinku):").grid(row=row, column=0, sticky="w", pady=(10, 0))
-        tk.Entry(left_panel, textvariable=self.motifs_var, width=40).grid(row=row, column=1, padx=5, sticky="w", pady=(10, 0))
+        tk.Label(left_panel, text="Motywy (po przecinku):").grid(row=row, column=0, sticky="w", pady=(12, 0))
+        tk.Entry(left_panel, textvariable=self.motifs_var, width=40).grid(row=row, column=1, padx=5, sticky="w", pady=(12, 0))
 
         row += 1
         tk.Label(left_panel, text="Bin size:").grid(row=row, column=0, sticky="w")
@@ -540,6 +557,7 @@ class App(tk.Tk):
         row += 1
         tk.Button(left_panel, text="Odśwież wykres", command=self.refresh_plot).grid(row=row, column=1, sticky="w", pady=6)
         tk.Button(left_panel, text="Eksport PDF", command=self.export_all).grid(row=row, column=2, sticky="w", pady=6)
+        tk.Button(left_panel, text="Wyczyść wszystko", command=self.clear_all_inputs).grid(row=row, column=3, padx=(5, 0), sticky="w", pady=6)
 
         self.out = tk.Text(self, height=14)
         self.out.pack(fill="x", padx=10, pady=(5, 10))
@@ -564,10 +582,8 @@ class App(tk.Tk):
         try:
             if self.current_scatter is None:
                 return
-
             if event.artist != self.current_scatter:
                 return
-
             if not hasattr(event, "ind") or len(event.ind) == 0:
                 return
 
@@ -582,9 +598,25 @@ class App(tk.Tk):
                 "Szczegóły punktu",
                 f"{seq_label}\nMotyw: {motif}\nPozycja: {pos}"
             )
-
         except Exception as e:
             messagebox.showerror("Błąd kliknięcia", str(e))
+
+    def clear_seq1(self):
+        self.file1_var.set("")
+        self.ncbi1_var.set("")
+        self.seq1_source_var.set("file")
+
+    def clear_seq2(self):
+        self.file2_var.set("")
+        self.ncbi2_var.set("")
+        self.seq2_source_var.set("file")
+
+    def clear_all_inputs(self):
+        self.clear_seq1()
+        self.clear_seq2()
+        self.email_var.set("twoj_mail@example.com")
+        self.motifs_var.set("ATG,TATA,CGCG")
+        self.bin_var.set("100")
 
     def pick_file1(self):
         path = filedialog.askopenfilename(
@@ -592,7 +624,8 @@ class App(tk.Tk):
         )
         if path:
             self.file1_var.set(path)
-            self.seq1_data = None
+            self.ncbi1_var.set("")
+            self.seq1_source_var.set("file")
 
     def pick_file2(self):
         path = filedialog.askopenfilename(
@@ -600,12 +633,14 @@ class App(tk.Tk):
         )
         if path:
             self.file2_var.set(path)
-            self.seq2_data = None
+            self.ncbi2_var.set("")
+            self.seq2_source_var.set("file")
 
     def fetch_ncbi1(self):
         try:
             source, header, seq = fetch_sequence_from_ncbi(self.ncbi1_var.get(), self.email_var.get())
-            self.seq1_data = (source, header, seq)
+            self.file1_var.set("")
+            self.seq1_source_var.set("ncbi")
             self.log(f"Pobrano sekwencję 1 z NCBI: {source}, długość = {len(seq)} nt")
         except Exception as e:
             messagebox.showerror("Błąd NCBI", str(e))
@@ -613,25 +648,46 @@ class App(tk.Tk):
     def fetch_ncbi2(self):
         try:
             source, header, seq = fetch_sequence_from_ncbi(self.ncbi2_var.get(), self.email_var.get())
-            self.seq2_data = (source, header, seq)
+            self.file2_var.set("")
+            self.seq2_source_var.set("ncbi")
             self.log(f"Pobrano sekwencję 2 z NCBI: {source}, długość = {len(seq)} nt")
         except Exception as e:
             messagebox.showerror("Błąd NCBI", str(e))
 
     def get_seq1(self):
-        if self.seq1_data is not None:
-            return self.seq1_data
-        path = self.file1_var.get().strip()
-        if path:
-            return read_sequence_file(path)
-        raise ValueError("Nie podano sekwencji 1 (ani pliku, ani NCBI).")
+        source_mode = self.seq1_source_var.get()
+
+        if source_mode == "file":
+            path = self.file1_var.get().strip()
+            if path:
+                return read_sequence_file(path)
+            raise ValueError("Dla sekwencji 1 wybrano źródło 'Plik', ale nie wskazano pliku.")
+
+        if source_mode == "ncbi":
+            accession = self.ncbi1_var.get().strip()
+            email = self.email_var.get().strip()
+            if not accession:
+                raise ValueError("Dla sekwencji 1 wybrano źródło 'NCBI', ale nie podano accession ID.")
+            return fetch_sequence_from_ncbi(accession, email)
+
+        raise ValueError("Nieprawidłowe źródło dla sekwencji 1.")
 
     def get_seq2(self):
-        if self.seq2_data is not None:
-            return self.seq2_data
-        path = self.file2_var.get().strip()
-        if path:
-            return read_sequence_file(path)
+        source_mode = self.seq2_source_var.get()
+
+        if source_mode == "file":
+            path = self.file2_var.get().strip()
+            if path:
+                return read_sequence_file(path)
+            return None
+
+        if source_mode == "ncbi":
+            accession = self.ncbi2_var.get().strip()
+            email = self.email_var.get().strip()
+            if not accession:
+                return None
+            return fetch_sequence_from_ncbi(accession, email)
+
         return None
 
     def run_analysis(self):
