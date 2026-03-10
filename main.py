@@ -3,7 +3,6 @@ import time
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 from io import StringIO
-
 import ssl
 import certifi
 
@@ -26,9 +25,9 @@ from Bio import Entrez, SeqIO
 VALID_DNA = set("ACGTN")
 
 
-# =========================
+
 # LOGIKA
-# =========================
+
 
 def validate_dna(seq: str) -> str:
     seq = seq.upper().replace(" ", "").replace("\n", "").replace("\r", "")
@@ -226,9 +225,9 @@ def analyze_sequence(source_name: str, header: str, seq: str, motifs: List[str],
     }
 
 
-# =========================
+
 # PDF
-# =========================
+
 
 def export_pdf_report(
     out_path: Path,
@@ -425,9 +424,8 @@ def export_pdf_report(
             fig3.clear()
 
 
-# =========================
 # GUI
-# =========================
+
 
 class App(tk.Tk):
     def __init__(self):
