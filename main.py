@@ -1,11 +1,11 @@
 import re
 import time
+import ssl
+from io import StringIO
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
-from io import StringIO
-import ssl
-import certifi
 
+import certifi
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -22,12 +22,31 @@ from matplotlib.backends.backend_pdf import PdfPages
 from Bio import Entrez, SeqIO
 
 
+# =========================
+# STAŁE / KONFIGURACJA
+# =========================
+
 VALID_DNA = set("ACGTN")
 
+SOURCE_FILE = "file"
+SOURCE_NCBI = "ncbi"
+
+PLOT_COMPARISON = "comparison"
+PLOT_SEGMENTATION = "segmentation"
+PLOT_POSITIONS = "positions"
+
+DEFAULT_EMAIL = "twoj_mail@example.com"
+DEFAULT_MOTIFS = "ATG,TATA,CGCG"
+DEFAULT_BIN_SIZE = "100"
+WINDOW_GEOMETRY = "1120x680"
+APP_TITLE = "DNA Motif Analyzer - Extended"
+
+FILETYPES_FASTA = [("FASTA/TXT", "*.fasta *.fa *.fna *.txt"), ("All files", "*.*")]
 
 
-# LOGIKA
-
+# =========================
+# LOGIKA: SEKWENCJE
+# =========================
 
 def validate_dna(seq: str) -> str:
     seq = seq.upper().replace(" ", "").replace("\n", "").replace("\r", "")
@@ -42,6 +61,7 @@ def validate_dna(seq: str) -> str:
 def read_sequence_file(path: str) -> Tuple[str, str, str]:
     if not path:
         raise ValueError("Nie wybrano pliku.")
+
     file_path = Path(path)
     if not file_path.exists():
         raise ValueError("Plik nie istnieje.")
@@ -66,11 +86,12 @@ def read_sequence_file(path: str) -> Tuple[str, str, str]:
             seq_parts.append(ln)
 
         if encountered_extra_header:
-            raise ValueError("Plik multi-FASTA nie jest obsługiwany w tej wersji. Użyj pliku z jednym rekordem.")
+            raise ValueError(
+                "Plik multi-FASTA nie jest obsługiwany w tej wersji. Użyj pliku z jednym rekordem."
+            )
 
         seq = validate_dna("".join(seq_parts))
-        source_name = file_path.name
-        return source_name, header, seq
+        return file_path.name, header, seq
 
     seq = validate_dna("".join(lines))
     return file_path.name, file_path.name, seq
@@ -78,7 +99,7 @@ def read_sequence_file(path: str) -> Tuple[str, str, str]:
 
 def fetch_sequence_from_ncbi(accession: str, email: str) -> Tuple[str, str, str]:
     accession = accession.strip()
-    email = email.strip() or "twoj_mail@example.com"
+    email = email.strip() or DEFAULT_EMAIL
 
     if not accession:
         raise ValueError("Podaj accession ID.")
@@ -90,25 +111,62 @@ def fetch_sequence_from_ncbi(accession: str, email: str) -> Tuple[str, str, str]
         from urllib.request import urlopen
         import Bio.Entrez
 
-        Bio.Entrez.urlopen = lambda *args, **kwargs: urlopen(*args, context=ssl_context, **kwargs)
+        Bio.Entrez.urlopen = lambda *args, **kwargs: urlopen(
+            *args, context=ssl_context, **kwargs
+        )
 
-        with Entrez.efetch(db="nucleotide", id=accession, rettype="fasta", retmode="text") as handle:
+        with Entrez.efetch(
+            db="nucleotide",
+            id=accession,
+            rettype="fasta",
+            retmode="text"
+        ) as handle:
             fasta_text = handle.read()
+
     except Exception as e:
         raise ValueError(f"Nie udało się pobrać sekwencji z NCBI: {e}")
 
     if not fasta_text.strip():
         raise ValueError("NCBI nie zwróciło danych.")
 
-    fasta_io = StringIO(fasta_text)
-    record = SeqIO.read(fasta_io, "fasta")
-
+    record = SeqIO.read(StringIO(fasta_text), "fasta")
     header = record.description
     seq = validate_dna(str(record.seq))
     source_name = f"NCBI:{accession}"
 
     return source_name, header, seq
 
+
+def load_sequence(
+    source_mode: str,
+    file_path: str,
+    accession: str,
+    email: str,
+    seq_label: str,
+    required: bool = True
+) -> Optional[Tuple[str, str, str]]:
+    if source_mode == SOURCE_FILE:
+        file_path = file_path.strip()
+        if file_path:
+            return read_sequence_file(file_path)
+        if required:
+            raise ValueError(f"Dla {seq_label} wybrano źródło 'Plik', ale nie wskazano pliku.")
+        return None
+
+    if source_mode == SOURCE_NCBI:
+        accession = accession.strip()
+        if accession:
+            return fetch_sequence_from_ncbi(accession, email)
+        if required:
+            raise ValueError(f"Dla {seq_label} wybrano źródło 'NCBI', ale nie podano accession ID.")
+        return None
+
+    raise ValueError(f"Nieprawidłowe źródło dla {seq_label}.")
+
+
+# =========================
+# LOGIKA: MOTYWY I ANALIZA
+# =========================
 
 def normalize_motifs(motifs_text: str) -> List[str]:
     motifs = [m.strip().upper() for m in motifs_text.split(",") if m.strip()]
@@ -135,8 +193,7 @@ def segment_counts(seq_len: int, positions0: List[int], bin_size: int) -> pd.Dat
     if bin_size <= 0:
         raise ValueError("Bin size musi być > 0.")
 
-    n_bins = int(np.ceil(seq_len / bin_size))
-    n_bins = max(n_bins, 1)
+    n_bins = max(int(np.ceil(seq_len / bin_size)), 1)
 
     if not positions0:
         counts = np.zeros(n_bins, dtype=int)
@@ -184,7 +241,13 @@ def compute_summary(seq: str, motif: str, positions0: List[int]) -> Dict:
     }
 
 
-def analyze_sequence(source_name: str, header: str, seq: str, motifs: List[str], bin_size: int) -> Dict[str, pd.DataFrame]:
+def analyze_sequence(
+    source_name: str,
+    header: str,
+    seq: str,
+    motifs: List[str],
+    bin_size: int
+) -> Dict[str, pd.DataFrame]:
     summary_rows = []
     hits_rows = []
     bins_frames = []
@@ -214,20 +277,16 @@ def analyze_sequence(source_name: str, header: str, seq: str, motifs: List[str],
                 "end_1": p + len(motif)
             })
 
-    summary_df = pd.DataFrame(summary_rows)
-    hits_df = pd.DataFrame(hits_rows)
-    bins_df = pd.concat(bins_frames, ignore_index=True) if bins_frames else pd.DataFrame()
-
     return {
-        "summary": summary_df,
-        "hits": hits_df,
-        "bins": bins_df
+        "summary": pd.DataFrame(summary_rows),
+        "hits": pd.DataFrame(hits_rows),
+        "bins": pd.concat(bins_frames, ignore_index=True) if bins_frames else pd.DataFrame()
     }
 
 
-
-# PDF
-
+# =========================
+# RAPORT PDF
+# =========================
 
 def export_pdf_report(
     out_path: Path,
@@ -253,7 +312,6 @@ def export_pdf_report(
             return
 
         show_df = df.copy()
-
         wanted_cols = [
             "motif",
             "count",
@@ -269,14 +327,13 @@ def export_pdf_report(
             if pd.api.types.is_float_dtype(show_df[col]):
                 show_df[col] = show_df[col].round(3)
 
-        rename_map = {
+        show_df = show_df.rename(columns={
             "density_per_1000nt": "dens/1000nt",
             "mean_gap_nt": "mean_gap",
             "median_gap_nt": "median_gap",
             "min_gap_nt": "min_gap",
             "max_gap_nt": "max_gap"
-        }
-        show_df = show_df.rename(columns=rename_map)
+        })
 
         if len(show_df) > 25:
             show_df = show_df.head(25)
@@ -292,7 +349,6 @@ def export_pdf_report(
             bbox=[0.05, 0.48, 0.90, 0.22],
             colWidths=col_widths
         )
-
         table.auto_set_font_size(False)
         table.set_fontsize(10)
         table.scale(1, 1.6)
@@ -401,18 +457,14 @@ def export_pdf_report(
             fig3 = Figure(figsize=(11.69, 8.27))
             ax3 = fig3.add_subplot(111)
 
-            h1 = analysis1["hits"]
-            d1 = h1[h1["motif"] == motif]
+            d1 = analysis1["hits"][analysis1["hits"]["motif"] == motif]
             if not d1.empty:
-                y1 = np.ones(len(d1))
-                ax3.scatter(d1["start_1"], y1, label="Sekwencja 1")
+                ax3.scatter(d1["start_1"], np.ones(len(d1)), label="Sekwencja 1")
 
             if analysis2 is not None:
-                h2 = analysis2["hits"]
-                d2 = h2[h2["motif"] == motif]
+                d2 = analysis2["hits"][analysis2["hits"]["motif"] == motif]
                 if not d2.empty:
-                    y2 = np.ones(len(d2)) * 2
-                    ax3.scatter(d2["start_1"], y2, label="Sekwencja 2")
+                    ax3.scatter(d2["start_1"], np.ones(len(d2)) * 2, label="Sekwencja 2")
 
             ax3.set_xlabel("Pozycja w sekwencji (nt)")
             ax3.set_yticks([1, 2] if analysis2 is not None else [1])
@@ -424,27 +476,31 @@ def export_pdf_report(
             fig3.clear()
 
 
+# =========================
 # GUI
-
+# =========================
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("DNA Motif Analyzer - Extended")
-        self.geometry("1360x900")
+        self.title(APP_TITLE)
+        self.geometry(WINDOW_GEOMETRY)
+        self.minsize(980, 620)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
         self.file1_var = tk.StringVar()
         self.file2_var = tk.StringVar()
 
-        self.seq1_source_var = tk.StringVar(value="file")
-        self.seq2_source_var = tk.StringVar(value="file")
+        self.seq1_source_var = tk.StringVar(value=SOURCE_FILE)
+        self.seq2_source_var = tk.StringVar(value=SOURCE_FILE)
 
         self.ncbi1_var = tk.StringVar()
         self.ncbi2_var = tk.StringVar()
-        self.email_var = tk.StringVar(value="twoj_mail@example.com")
+        self.email_var = tk.StringVar(value=DEFAULT_EMAIL)
 
-        self.motifs_var = tk.StringVar(value="ATG,TATA,CGCG")
-        self.bin_var = tk.StringVar(value="100")
+        self.motifs_var = tk.StringVar(value=DEFAULT_MOTIFS)
+        self.bin_var = tk.StringVar(value=DEFAULT_BIN_SIZE)
 
         self.analysis1 = None
         self.analysis2 = None
@@ -455,119 +511,190 @@ class App(tk.Tk):
         self._build()
 
     def _build(self):
-        top = tk.Frame(self, padx=10, pady=10)
-        top.pack(fill="x")
+        self.notebook = ttk.Notebook(self)
+        self.notebook.grid(row=0, column=0, sticky="nsew")
 
-        left_panel = tk.Frame(top)
-        left_panel.pack(side="left", anchor="n", fill="x", expand=True)
+        self.settings_tab = tk.Frame(self.notebook)
+        self.results_tab = tk.Frame(self.notebook)
 
-        right_panel = tk.Frame(top, padx=20, pady=10)
-        right_panel.pack(side="right", anchor="ne")
+        self.notebook.add(self.settings_tab, text="Ustawienia")
+        self.notebook.add(self.results_tab, text="Wyniki")
 
-        title_label = tk.Label(
-            right_panel,
+        self.settings_tab.grid_columnconfigure(0, weight=1)
+        self.results_tab.grid_columnconfigure(0, weight=1)
+        self.results_tab.grid_rowconfigure(1, weight=1)
+
+        self._build_settings_tab()
+        self._build_results_tab()
+
+    def _build_settings_tab(self):
+        header_frame = tk.Frame(self.settings_tab, padx=10, pady=10)
+        header_frame.grid(row=0, column=0, sticky="ew")
+        header_frame.grid_columnconfigure(0, weight=1)
+
+        tk.Label(
+            header_frame,
             text="DNA Motif Analyzer",
             font=("Arial", 18, "bold"),
-            anchor="e",
-            justify="right"
-        )
-        title_label.pack(anchor="e")
+            anchor="center",
+            justify="center"
+        ).grid(row=0, column=0, sticky="ew")
 
-        desc_label = tk.Label(
-            right_panel,
+        tk.Label(
+            header_frame,
             text=(
-                "Aplikacja do analizy motywów sekwencyjnych w DNA.\n"
-                "Obsługuje pliki FASTA/TXT i rekordy NCBI,\n"
-                "porównanie dwóch sekwencji, wizualizację\n"
-                "oraz eksport zbiorczego raportu PDF."
+                "Aplikacja do analizy motywów sekwencyjnych w DNA. "
+                "Obsługuje pliki FASTA/TXT i rekordy NCBI, porównanie dwóch sekwencji, "
+                "wizualizację oraz eksport zbiorczego raportu PDF."
             ),
             font=("Arial", 10),
-            justify="right",
-            anchor="e"
-        )
-        desc_label.pack(anchor="e", pady=(8, 0))
+            anchor="center",
+            justify="center",
+            wraplength=1100
+        ).grid(row=1, column=0, sticky="ew", pady=(6, 0))
+
+        form_frame = tk.Frame(self.settings_tab, padx=10, pady=5)
+        form_frame.grid(row=1, column=0, sticky="ew")
+        form_frame.grid_columnconfigure(1, weight=1)
 
         row = 0
-        tk.Label(left_panel, text="Sekwencja 1 - źródło:").grid(row=row, column=0, sticky="w")
-        tk.Radiobutton(left_panel, text="Plik", variable=self.seq1_source_var, value="file").grid(row=row, column=1, sticky="w")
-        tk.Radiobutton(left_panel, text="NCBI", variable=self.seq1_source_var, value="ncbi").grid(row=row, column=1, padx=(80, 0), sticky="w")
+
+        row = self._build_sequence_controls(
+            parent=form_frame,
+            row=row,
+            seq_number=1,
+            source_var=self.seq1_source_var,
+            file_var=self.file1_var,
+            ncbi_var=self.ncbi1_var,
+            pick_cmd=self.pick_file1,
+            fetch_cmd=self.fetch_ncbi1,
+            clear_cmd=self.clear_seq1,
+            pady_top=0
+        )
+
+        row = self._build_sequence_controls(
+            parent=form_frame,
+            row=row,
+            seq_number=2,
+            source_var=self.seq2_source_var,
+            file_var=self.file2_var,
+            ncbi_var=self.ncbi2_var,
+            pick_cmd=self.pick_file2,
+            fetch_cmd=self.fetch_ncbi2,
+            clear_cmd=self.clear_seq2,
+            pady_top=12
+        )
+
+        tk.Label(form_frame, text="E-mail do Entrez/NCBI:").grid(row=row, column=0, sticky="w", pady=(12, 0))
+        tk.Entry(form_frame, textvariable=self.email_var, width=35).grid(row=row, column=1, padx=5, sticky="w", pady=(12, 0))
 
         row += 1
-        tk.Label(left_panel, text="Sekwencja 1 - plik:").grid(row=row, column=0, sticky="w")
-        tk.Entry(left_panel, textvariable=self.file1_var, width=60).grid(row=row, column=1, padx=5, sticky="w")
-        tk.Button(left_panel, text="Wybierz...", command=self.pick_file1).grid(row=row, column=2, sticky="w")
-        tk.Button(left_panel, text="Clear", command=self.clear_seq1).grid(row=row, column=3, padx=(5, 0), sticky="w")
+        tk.Label(form_frame, text="Motywy (po przecinku):").grid(row=row, column=0, sticky="w", pady=(12, 0))
+        tk.Entry(form_frame, textvariable=self.motifs_var, width=32).grid(row=row, column=1, padx=5, sticky="w", pady=(12, 0))
 
         row += 1
-        tk.Label(left_panel, text="Sekwencja 1 - accession NCBI:").grid(row=row, column=0, sticky="w", pady=(6, 0))
-        tk.Entry(left_panel, textvariable=self.ncbi1_var, width=30).grid(row=row, column=1, padx=5, sticky="w", pady=(6, 0))
-        tk.Button(left_panel, text="Pobierz 1 z NCBI", command=self.fetch_ncbi1).grid(row=row, column=2, sticky="w", pady=(6, 0))
-
-        row += 1
-        tk.Label(left_panel, text="Sekwencja 2 - źródło:").grid(row=row, column=0, sticky="w", pady=(12, 0))
-        tk.Radiobutton(left_panel, text="Plik", variable=self.seq2_source_var, value="file").grid(row=row, column=1, sticky="w", pady=(12, 0))
-        tk.Radiobutton(left_panel, text="NCBI", variable=self.seq2_source_var, value="ncbi").grid(row=row, column=1, padx=(80, 0), sticky="w", pady=(12, 0))
-
-        row += 1
-        tk.Label(left_panel, text="Sekwencja 2 - plik:").grid(row=row, column=0, sticky="w")
-        tk.Entry(left_panel, textvariable=self.file2_var, width=60).grid(row=row, column=1, padx=5, sticky="w")
-        tk.Button(left_panel, text="Wybierz...", command=self.pick_file2).grid(row=row, column=2, sticky="w")
-        tk.Button(left_panel, text="Clear", command=self.clear_seq2).grid(row=row, column=3, padx=(5, 0), sticky="w")
-
-        row += 1
-        tk.Label(left_panel, text="Sekwencja 2 - accession NCBI:").grid(row=row, column=0, sticky="w", pady=(6, 0))
-        tk.Entry(left_panel, textvariable=self.ncbi2_var, width=30).grid(row=row, column=1, padx=5, sticky="w", pady=(6, 0))
-        tk.Button(left_panel, text="Pobierz 2 z NCBI", command=self.fetch_ncbi2).grid(row=row, column=2, sticky="w", pady=(6, 0))
-
-        row += 1
-        tk.Label(left_panel, text="E-mail do Entrez/NCBI:").grid(row=row, column=0, sticky="w", pady=(12, 0))
-        tk.Entry(left_panel, textvariable=self.email_var, width=35).grid(row=row, column=1, padx=5, sticky="w", pady=(12, 0))
-
-        row += 1
-        tk.Label(left_panel, text="Motywy (po przecinku):").grid(row=row, column=0, sticky="w", pady=(12, 0))
-        tk.Entry(left_panel, textvariable=self.motifs_var, width=40).grid(row=row, column=1, padx=5, sticky="w", pady=(12, 0))
-
-        row += 1
-        tk.Label(left_panel, text="Bin size:").grid(row=row, column=0, sticky="w")
+        tk.Label(form_frame, text="Bin size:").grid(row=row, column=0, sticky="w")
         vcmd = (self.register(self._only_digits), "%P")
-        tk.Entry(left_panel, textvariable=self.bin_var, validate="key", validatecommand=vcmd, width=10).grid(row=row, column=1, padx=5, sticky="w")
+        tk.Entry(
+            form_frame,
+            textvariable=self.bin_var,
+            validate="key",
+            validatecommand=vcmd,
+            width=10
+        ).grid(row=row, column=1, padx=5, sticky="w")
 
         row += 1
-        tk.Button(left_panel, text="Analizuj", font=("Arial", 10, "bold"), command=self.run_analysis).grid(row=row, column=1, sticky="w", pady=10)
+        tk.Button(
+            form_frame,
+            text="Analizuj",
+            font=("Arial", 10, "bold"),
+            command=self.run_analysis
+        ).grid(row=row, column=1, sticky="w", pady=10)
 
-        row += 1
-        tk.Label(left_panel, text="Tryb wykresu:").grid(row=row, column=0, sticky="w")
-        self.plot_mode = tk.StringVar(value="comparison")
+        tk.Button(
+            form_frame,
+            text="Wyczyść wszystko",
+            command=self.clear_all_inputs
+        ).grid(row=row, column=2, sticky="w", padx=(10, 0), pady=10)
+
+    def _build_results_tab(self):
+        controls_frame = tk.Frame(self.results_tab, padx=10, pady=10)
+        controls_frame.grid(row=0, column=0, sticky="ew")
+
+        tk.Label(controls_frame, text="Tryb wykresu:").grid(row=0, column=0, sticky="w")
+        self.plot_mode = tk.StringVar(value=PLOT_COMPARISON)
         ttk.Combobox(
-            left_panel,
+            controls_frame,
             textvariable=self.plot_mode,
-            values=["comparison", "segmentation", "positions"],
+            values=[PLOT_COMPARISON, PLOT_SEGMENTATION, PLOT_POSITIONS],
             state="readonly",
             width=20
-        ).grid(row=row, column=1, sticky="w")
+        ).grid(row=0, column=1, sticky="w", padx=(5, 20))
 
-        row += 1
-        tk.Label(left_panel, text="Motyw do wykresu szczegółowego:").grid(row=row, column=0, sticky="w")
+        tk.Label(controls_frame, text="Motyw do wykresu szczegółowego:").grid(row=0, column=2, sticky="w")
         self.selected_motif_var = tk.StringVar(value="ATG")
-        self.motif_combo = ttk.Combobox(left_panel, textvariable=self.selected_motif_var, values=["ATG"], state="readonly", width=20)
-        self.motif_combo.grid(row=row, column=1, sticky="w")
+        self.motif_combo = ttk.Combobox(
+            controls_frame,
+            textvariable=self.selected_motif_var,
+            values=["ATG"],
+            state="readonly",
+            width=20
+        )
+        self.motif_combo.grid(row=0, column=3, sticky="w", padx=(5, 20))
 
-        row += 1
-        tk.Button(left_panel, text="Odśwież wykres", command=self.refresh_plot).grid(row=row, column=1, sticky="w", pady=6)
-        tk.Button(left_panel, text="Eksport PDF", command=self.export_all).grid(row=row, column=2, sticky="w", pady=6)
-        tk.Button(left_panel, text="Wyczyść wszystko", command=self.clear_all_inputs).grid(row=row, column=3, padx=(5, 0), sticky="w", pady=6)
+        tk.Button(controls_frame, text="Odśwież wykres", command=self.refresh_plot).grid(row=0, column=4, sticky="w")
+        tk.Button(controls_frame, text="Eksport PDF", command=self.export_all).grid(row=0, column=5, sticky="w", padx=(10, 0))
 
-        self.out = tk.Text(self, height=14)
-        self.out.pack(fill="x", padx=10, pady=(5, 10))
+        content_frame = tk.Frame(self.results_tab, padx=10, pady=5)
+        content_frame.grid(row=1, column=0, sticky="nsew")
+        content_frame.grid_columnconfigure(0, weight=1)
+        content_frame.grid_rowconfigure(1, weight=1)
+
+        self.out = tk.Text(content_frame, height=10)
+        self.out.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+
+        self.plot_frame = tk.Frame(content_frame)
+        self.plot_frame.grid(row=1, column=0, sticky="nsew")
+        self.plot_frame.grid_rowconfigure(0, weight=1)
+        self.plot_frame.grid_columnconfigure(0, weight=1)
 
         self.figure = Figure(figsize=(10, 5.5), dpi=100)
         self.ax = self.figure.add_subplot(111)
 
-        self.canvas = FigureCanvasTkAgg(self.figure, master=self)
+        self.canvas = FigureCanvasTkAgg(self.figure, master=self.plot_frame)
         self.canvas_widget = self.canvas.get_tk_widget()
         self.canvas.mpl_connect("pick_event", self.on_pick)
-
         self.canvas_visible = False
+
+    def _build_sequence_controls(
+        self,
+        parent,
+        row: int,
+        seq_number: int,
+        source_var: tk.StringVar,
+        file_var: tk.StringVar,
+        ncbi_var: tk.StringVar,
+        pick_cmd,
+        fetch_cmd,
+        clear_cmd,
+        pady_top: int = 0
+    ) -> int:
+        tk.Label(parent, text=f"Sekwencja {seq_number} - źródło:").grid(row=row, column=0, sticky="w", pady=(pady_top, 0))
+        tk.Radiobutton(parent, text="Plik", variable=source_var, value=SOURCE_FILE).grid(row=row, column=1, sticky="w", pady=(pady_top, 0))
+        tk.Radiobutton(parent, text="NCBI", variable=source_var, value=SOURCE_NCBI).grid(row=row, column=1, padx=(80, 0), sticky="w", pady=(pady_top, 0))
+
+        row += 1
+        tk.Label(parent, text=f"Sekwencja {seq_number} - plik:").grid(row=row, column=0, sticky="w")
+        tk.Entry(parent, textvariable=file_var, width=50).grid(row=row, column=1, padx=5, sticky="w")
+        tk.Button(parent, text="Wybierz...", command=pick_cmd).grid(row=row, column=2, sticky="w")
+        tk.Button(parent, text="Clear", command=clear_cmd).grid(row=row, column=3, padx=(5, 0), sticky="w")
+
+        row += 1
+        tk.Label(parent, text=f"Sekwencja {seq_number} - accession NCBI:").grid(row=row, column=0, sticky="w", pady=(6, 0))
+        tk.Entry(parent, textvariable=ncbi_var, width=24).grid(row=row, column=1, padx=5, sticky="w", pady=(6, 0))
+        tk.Button(parent, text=f"Pobierz {seq_number} z NCBI", command=fetch_cmd).grid(row=row, column=2, sticky="w", pady=(6, 0))
+
+        return row + 1
 
     def _only_digits(self, value: str) -> bool:
         return value.isdigit() or value == ""
@@ -576,69 +703,42 @@ class App(tk.Tk):
         self.out.insert("end", text + "\n")
         self.out.see("end")
 
-    def on_pick(self, event):
-        try:
-            if self.current_scatter is None:
-                return
-            if event.artist != self.current_scatter:
-                return
-            if not hasattr(event, "ind") or len(event.ind) == 0:
-                return
-
-            idx = event.ind[0]
-            if idx >= len(self.current_points_meta):
-                return
-
-            seq_label, motif, pos = self.current_points_meta[idx]
-
-            self.log(f"Kliknięto punkt: {seq_label}, motyw {motif}, pozycja {pos}")
-            messagebox.showinfo(
-                "Szczegóły punktu",
-                f"{seq_label}\nMotyw: {motif}\nPozycja: {pos}"
-            )
-        except Exception as e:
-            messagebox.showerror("Błąd kliknięcia", str(e))
-
     def clear_seq1(self):
         self.file1_var.set("")
         self.ncbi1_var.set("")
-        self.seq1_source_var.set("file")
+        self.seq1_source_var.set(SOURCE_FILE)
 
     def clear_seq2(self):
         self.file2_var.set("")
         self.ncbi2_var.set("")
-        self.seq2_source_var.set("file")
+        self.seq2_source_var.set(SOURCE_FILE)
 
     def clear_all_inputs(self):
         self.clear_seq1()
         self.clear_seq2()
-        self.email_var.set("twoj_mail@example.com")
-        self.motifs_var.set("ATG,TATA,CGCG")
-        self.bin_var.set("100")
+        self.email_var.set(DEFAULT_EMAIL)
+        self.motifs_var.set(DEFAULT_MOTIFS)
+        self.bin_var.set(DEFAULT_BIN_SIZE)
 
     def pick_file1(self):
-        path = filedialog.askopenfilename(
-            filetypes=[("FASTA/TXT", "*.fasta *.fa *.fna *.txt"), ("All files", "*.*")]
-        )
+        path = filedialog.askopenfilename(filetypes=FILETYPES_FASTA)
         if path:
             self.file1_var.set(path)
             self.ncbi1_var.set("")
-            self.seq1_source_var.set("file")
+            self.seq1_source_var.set(SOURCE_FILE)
 
     def pick_file2(self):
-        path = filedialog.askopenfilename(
-            filetypes=[("FASTA/TXT", "*.fasta *.fa *.fna *.txt"), ("All files", "*.*")]
-        )
+        path = filedialog.askopenfilename(filetypes=FILETYPES_FASTA)
         if path:
             self.file2_var.set(path)
             self.ncbi2_var.set("")
-            self.seq2_source_var.set("file")
+            self.seq2_source_var.set(SOURCE_FILE)
 
     def fetch_ncbi1(self):
         try:
             source, header, seq = fetch_sequence_from_ncbi(self.ncbi1_var.get(), self.email_var.get())
             self.file1_var.set("")
-            self.seq1_source_var.set("ncbi")
+            self.seq1_source_var.set(SOURCE_NCBI)
             self.log(f"Pobrano sekwencję 1 z NCBI: {source}, długość = {len(seq)} nt")
         except Exception as e:
             messagebox.showerror("Błąd NCBI", str(e))
@@ -647,46 +747,30 @@ class App(tk.Tk):
         try:
             source, header, seq = fetch_sequence_from_ncbi(self.ncbi2_var.get(), self.email_var.get())
             self.file2_var.set("")
-            self.seq2_source_var.set("ncbi")
+            self.seq2_source_var.set(SOURCE_NCBI)
             self.log(f"Pobrano sekwencję 2 z NCBI: {source}, długość = {len(seq)} nt")
         except Exception as e:
             messagebox.showerror("Błąd NCBI", str(e))
 
     def get_seq1(self):
-        source_mode = self.seq1_source_var.get()
-
-        if source_mode == "file":
-            path = self.file1_var.get().strip()
-            if path:
-                return read_sequence_file(path)
-            raise ValueError("Dla sekwencji 1 wybrano źródło 'Plik', ale nie wskazano pliku.")
-
-        if source_mode == "ncbi":
-            accession = self.ncbi1_var.get().strip()
-            email = self.email_var.get().strip()
-            if not accession:
-                raise ValueError("Dla sekwencji 1 wybrano źródło 'NCBI', ale nie podano accession ID.")
-            return fetch_sequence_from_ncbi(accession, email)
-
-        raise ValueError("Nieprawidłowe źródło dla sekwencji 1.")
+        return load_sequence(
+            source_mode=self.seq1_source_var.get(),
+            file_path=self.file1_var.get(),
+            accession=self.ncbi1_var.get(),
+            email=self.email_var.get(),
+            seq_label="sekwencji 1",
+            required=True
+        )
 
     def get_seq2(self):
-        source_mode = self.seq2_source_var.get()
-
-        if source_mode == "file":
-            path = self.file2_var.get().strip()
-            if path:
-                return read_sequence_file(path)
-            return None
-
-        if source_mode == "ncbi":
-            accession = self.ncbi2_var.get().strip()
-            email = self.email_var.get().strip()
-            if not accession:
-                return None
-            return fetch_sequence_from_ncbi(accession, email)
-
-        return None
+        return load_sequence(
+            source_mode=self.seq2_source_var.get(),
+            file_path=self.file2_var.get(),
+            accession=self.ncbi2_var.get(),
+            email=self.email_var.get(),
+            seq_label="sekwencji 2",
+            required=False
+        )
 
     def run_analysis(self):
         try:
@@ -695,6 +779,7 @@ class App(tk.Tk):
 
             if not self.bin_var.get():
                 raise ValueError("Podaj bin size.")
+
             bin_size = int(self.bin_var.get())
             motifs = normalize_motifs(self.motifs_var.get())
 
@@ -730,6 +815,7 @@ class App(tk.Tk):
             self.selected_motif_var.set(motifs[0])
 
             self.refresh_plot()
+            self.notebook.select(self.results_tab)
 
             elapsed = time.time() - start
             self.log("")
@@ -737,6 +823,28 @@ class App(tk.Tk):
 
         except Exception as e:
             messagebox.showerror("Błąd", str(e))
+
+    def on_pick(self, event):
+        try:
+            if self.current_scatter is None:
+                return
+            if event.artist != self.current_scatter:
+                return
+            if not hasattr(event, "ind") or len(event.ind) == 0:
+                return
+
+            idx = event.ind[0]
+            if idx >= len(self.current_points_meta):
+                return
+
+            seq_label, motif, pos = self.current_points_meta[idx]
+            self.log(f"Kliknięto punkt: {seq_label}, motyw {motif}, pozycja {pos}")
+            messagebox.showinfo(
+                "Szczegóły punktu",
+                f"{seq_label}\nMotyw: {motif}\nPozycja: {pos}"
+            )
+        except Exception as e:
+            messagebox.showerror("Błąd kliknięcia", str(e))
 
     def refresh_plot(self):
         try:
@@ -750,79 +858,15 @@ class App(tk.Tk):
             mode = self.plot_mode.get()
             motif = self.selected_motif_var.get()
 
-            if mode == "comparison":
-                s1 = self.analysis1["summary"][["motif", "count"]].copy()
-                motifs = s1["motif"].tolist()
-                x = np.arange(len(motifs))
-                width = 0.35
-
-                self.ax.bar(x - width / 2, s1["count"], width=width, label="Sekwencja 1")
-
-                if self.analysis2 is not None:
-                    s2 = self.analysis2["summary"].set_index("motif").reindex(motifs).fillna(0)
-                    self.ax.bar(x + width / 2, s2["count"], width=width, label="Sekwencja 2")
-
-                self.ax.set_xticks(x)
-                self.ax.set_xticklabels(motifs)
-                self.ax.set_xlabel("Motyw")
-                self.ax.set_ylabel("Liczba wystąpień")
-                self.ax.set_title("Porównanie liczby wystąpień motywów")
-                self.ax.legend()
-                self.ax.grid(True)
-
-            elif mode == "segmentation":
-                d1 = self.analysis1["bins"][self.analysis1["bins"]["motif"] == motif]
-                if not d1.empty:
-                    self.ax.plot(d1["start_nt"], d1["count"], marker="o", label="Sekwencja 1")
-
-                if self.analysis2 is not None:
-                    d2 = self.analysis2["bins"][self.analysis2["bins"]["motif"] == motif]
-                    if not d2.empty:
-                        self.ax.plot(d2["start_nt"], d2["count"], marker="o", label="Sekwencja 2")
-
-                self.ax.set_xlabel("Pozycja startowa segmentu (nt)")
-                self.ax.set_ylabel("Liczba trafień")
-                self.ax.set_title(f"Segmentacja motywu: {motif}")
-                self.ax.legend()
-                self.ax.grid(True)
-
-            elif mode == "positions":
-                x_positions = []
-                y_positions = []
-
-                d1 = self.analysis1["hits"][self.analysis1["hits"]["motif"] == motif]
-                if not d1.empty:
-                    for pos in d1["start_1"].tolist():
-                        x_positions.append(pos)
-                        y_positions.append(1)
-                        self.current_points_meta.append(("Sekwencja 1", motif, pos))
-
-                if self.analysis2 is not None:
-                    d2 = self.analysis2["hits"][self.analysis2["hits"]["motif"] == motif]
-                    if not d2.empty:
-                        for pos in d2["start_1"].tolist():
-                            x_positions.append(pos)
-                            y_positions.append(2)
-                            self.current_points_meta.append(("Sekwencja 2", motif, pos))
-
-                if x_positions:
-                    self.current_scatter = self.ax.scatter(
-                        x_positions,
-                        y_positions,
-                        label="Motywy",
-                        picker=5
-                    )
-
-                self.ax.set_xlabel("Pozycja w sekwencji (nt)")
-                self.ax.set_yticks([1, 2] if self.analysis2 is not None else [1])
-                self.ax.set_yticklabels(
-                    ["Sekwencja 1", "Sekwencja 2"] if self.analysis2 is not None else ["Sekwencja 1"]
-                )
-                self.ax.set_title(f"Rozmieszczenie motywu na osi sekwencji: {motif}")
-                self.ax.grid(True)
+            if mode == PLOT_COMPARISON:
+                self._plot_comparison()
+            elif mode == PLOT_SEGMENTATION:
+                self._plot_segmentation(motif)
+            elif mode == PLOT_POSITIONS:
+                self._plot_positions(motif)
 
             if not self.canvas_visible:
-                self.canvas_widget.pack(fill="both", expand=True, padx=10, pady=10)
+                self.canvas_widget.grid(row=0, column=0, sticky="nsew")
                 self.canvas_visible = True
                 self.update_idletasks()
 
@@ -832,17 +876,84 @@ class App(tk.Tk):
         except Exception as e:
             messagebox.showerror("Błąd wykresu", str(e))
 
+    def _plot_comparison(self):
+        s1 = self.analysis1["summary"][["motif", "count"]].copy()
+        motifs = s1["motif"].tolist()
+        x = np.arange(len(motifs))
+        width = 0.35
+
+        self.ax.bar(x - width / 2, s1["count"], width=width, label="Sekwencja 1")
+
+        if self.analysis2 is not None:
+            s2 = self.analysis2["summary"].set_index("motif").reindex(motifs).fillna(0)
+            self.ax.bar(x + width / 2, s2["count"], width=width, label="Sekwencja 2")
+
+        self.ax.set_xticks(x)
+        self.ax.set_xticklabels(motifs)
+        self.ax.set_xlabel("Motyw")
+        self.ax.set_ylabel("Liczba wystąpień")
+        self.ax.set_title("Porównanie liczby wystąpień motywów")
+        self.ax.legend()
+        self.ax.grid(True)
+
+    def _plot_segmentation(self, motif: str):
+        d1 = self.analysis1["bins"][self.analysis1["bins"]["motif"] == motif]
+        if not d1.empty:
+            self.ax.plot(d1["start_nt"], d1["count"], marker="o", label="Sekwencja 1")
+
+        if self.analysis2 is not None:
+            d2 = self.analysis2["bins"][self.analysis2["bins"]["motif"] == motif]
+            if not d2.empty:
+                self.ax.plot(d2["start_nt"], d2["count"], marker="o", label="Sekwencja 2")
+
+        self.ax.set_xlabel("Pozycja startowa segmentu (nt)")
+        self.ax.set_ylabel("Liczba trafień")
+        self.ax.set_title(f"Segmentacja motywu: {motif}")
+        self.ax.legend()
+        self.ax.grid(True)
+
+    def _plot_positions(self, motif: str):
+        x_positions = []
+        y_positions = []
+
+        d1 = self.analysis1["hits"][self.analysis1["hits"]["motif"] == motif]
+        if not d1.empty:
+            for pos in d1["start_1"].tolist():
+                x_positions.append(pos)
+                y_positions.append(1)
+                self.current_points_meta.append(("Sekwencja 1", motif, pos))
+
+        if self.analysis2 is not None:
+            d2 = self.analysis2["hits"][self.analysis2["hits"]["motif"] == motif]
+            if not d2.empty:
+                for pos in d2["start_1"].tolist():
+                    x_positions.append(pos)
+                    y_positions.append(2)
+                    self.current_points_meta.append(("Sekwencja 2", motif, pos))
+
+        if x_positions:
+            self.current_scatter = self.ax.scatter(
+                x_positions,
+                y_positions,
+                label="Motywy",
+                picker=5
+            )
+
+        self.ax.set_xlabel("Pozycja w sekwencji (nt)")
+        self.ax.set_yticks([1, 2] if self.analysis2 is not None else [1])
+        self.ax.set_yticklabels(
+            ["Sekwencja 1", "Sekwencja 2"] if self.analysis2 is not None else ["Sekwencja 1"]
+        )
+        self.ax.set_title(f"Rozmieszczenie motywu na osi sekwencji: {motif}")
+        self.ax.grid(True)
+
     def export_all(self):
         try:
             if self.analysis1 is None:
                 raise ValueError("Najpierw wykonaj analizę.")
 
             input_path = self.file1_var.get().strip()
-            if input_path:
-                out_dir = Path(input_path).resolve().parent / "output"
-            else:
-                out_dir = Path.cwd() / "output"
-
+            out_dir = Path(input_path).resolve().parent / "output" if input_path else Path.cwd() / "output"
             out_dir.mkdir(exist_ok=True)
 
             pdf_filename = filedialog.asksaveasfilename(
@@ -858,7 +969,6 @@ class App(tk.Tk):
                 return
 
             pdf_path = Path(pdf_filename)
-
             source1 = self.analysis1["summary"]["source_name"].iloc[0]
             source2 = self.analysis2["summary"]["source_name"].iloc[0] if self.analysis2 is not None else None
 
